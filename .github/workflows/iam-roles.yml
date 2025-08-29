@@ -1,4 +1,4 @@
-name: AWS IAM User Management
+name: AWS IAM User and Security Management
 
 on:
   workflow_dispatch:
