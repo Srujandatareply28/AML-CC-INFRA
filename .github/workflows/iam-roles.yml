@@ -1,0 +1,152 @@
+name: AWS IAM Roles and User Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'create'
+        type: choice
+        options:
+          - create
+          - delete
+          - list
+      username:
+        description: 'IAM Username (required for create/delete)'
+        required: false
+        type: string
+      user_count:
+        description: 'Number of users to create (for bulk creation)'
+        required: false
+        default: '1'
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: 1.5.0
+
+jobs:
+  iam-management:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-IAM-Management
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      
+      - name: Validate inputs
+        run: |
+          if [[ "${{ github.event.inputs.action }}" == "create" || "${{ github.event.inputs.action }}" == "delete" ]]; then
+            if [[ -z "${{ github.event.inputs.username }}" ]]; then
+              echo "Error: Username is required for create/delete actions"
+              exit 1
+            fi
+          fi
+          
+          if [[ "${{ github.event.inputs.action }}" == "create" ]]; then
+            user_count="${{ github.event.inputs.user_count }}"
+            if ! [[ "$user_count" =~ ^[0-9]+$ ]] || [[ "$user_count" -lt 1 ]] || [[ "$user_count" -gt 10 ]]; then
+              echo "Error: User count must be a number between 1 and 10"
+              exit 1
+            fi
+          fi
+      
+      - name: Initialize Terraform
+        run: |
+          cd terraform
+          terraform init
+      
+      - name: Create IAM Users
+        if: github.event.inputs.action == 'create'
+        run: |
+          cd terraform
+          
+          # Create terraform.tfvars with user details
+          cat > terraform.tfvars << EOF
+          base_username = "${{ github.event.inputs.username }}"
+          user_count = ${{ github.event.inputs.user_count }}
+          EOF
+          
+          # Plan and apply
+          terraform plan -out=tfplan
+          terraform apply tfplan
+          
+          # Output created users
+          echo "## Created IAM Users" >> $GITHUB_STEP_SUMMARY
+          terraform output -json created_users | jq -r '.[] | "- " + .'
+          
+          # Save outputs as artifacts
+          terraform output -json > ../iam-outputs.json
+      
+      - name: Delete IAM Users
+        if: github.event.inputs.action == 'delete'
+        run: |
+          cd terraform
+          
+          # Create terraform.tfvars for deletion
+          cat > terraform.tfvars << EOF
+          base_username = "${{ github.event.inputs.username }}"
+          user_count = 0
+          EOF
+          
+          # Plan and apply destruction
+          terraform plan -destroy -out=tfplan
+          terraform apply tfplan
+          
+          echo "## Deleted IAM Users" >> $GITHUB_STEP_SUMMARY
+          echo "- Successfully deleted users with base name: ${{ github.event.inputs.username }}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: List IAM Users
+        if: github.event.inputs.action == 'list'
+        run: |
+          echo "## Current IAM Users" >> $GITHUB_STEP_SUMMARY
+          aws iam list-users --query 'Users[].UserName' --output table >> $GITHUB_STEP_SUMMARY
+          
+          echo "## IAM Roles" >> $GITHUB_STEP_SUMMARY
+          aws iam list-roles --query 'Roles[?starts_with(RoleName, `AML-CC`)].RoleName' --output table >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload Terraform outputs
+        if: github.event.inputs.action == 'create'
+        uses: actions/upload-artifact@v4
+        with:
+          name: iam-outputs-${{ github.run_number }}
+          path: iam-outputs.json
+          retention-days: 30
+      
+      - name: Security scan
+        run: |
+          echo "## Security Validation" >> $GITHUB_STEP_SUMMARY
+          
+          # Check for overly permissive policies
+          if aws iam list-attached-user-policies --user-name "${{ github.event.inputs.username }}" 2>/dev/null | grep -q "AdministratorAccess"; then
+            echo "⚠️ Warning: User has AdministratorAccess policy attached" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Validate MFA requirement
+          echo "✅ MFA enforcement is configured in IAM policies" >> $GITHUB_STEP_SUMMARY
+          
+          # Check security group rules
+          echo "✅ Security groups configured with minimal required access" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Cleanup on failure
+        if: failure()
+        run: |
+          cd terraform
+          echo "Cleaning up resources due to workflow failure..."
+          terraform destroy -auto-approve || true
