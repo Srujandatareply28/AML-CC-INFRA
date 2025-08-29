@@ -206,74 +206,74 @@ jobs:
           
           # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
           if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
-              policy_document=$(cat <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:*"
-      ],
-      "Resource": "*",
-      "Sid": "S3FullAccess"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "sagemaker:*"
-      ],
-      "Resource": "*",
-      "Sid": "SageMakerFullAccess"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "lambda:*"
-      ],
-      "Resource": "*",
-      "Sid": "LambdaFullAccess"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "quicksight:*"
-      ],
-      "Resource": "*",
-      "Sid": "QuickSightFullAccess"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ecs:*"
-      ],
-      "Resource": "*",
-      "Sid": "ECSFullAccess"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "iam:PassRole",
-        "iam:ListRoles",
-        "iam:GetRole"
-      ],
-      "Resource": "*",
-      "Sid": "IAMPassRoleAccess"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "logs:*",
-        "cloudwatch:*"
-      ],
-      "Resource": "*",
-      "Sid": "LogsAndMonitoringAccess"
-    }
-  ]
-}
-EOF
-              )
-              
+            policy_document=$(cat <<'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "s3:*"
+                ],
+                "Resource": "*",
+                "Sid": "S3FullAccess"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "sagemaker:*"
+                ],
+                "Resource": "*",
+                "Sid": "SageMakerFullAccess"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "lambda:*"
+                ],
+                "Resource": "*",
+                "Sid": "LambdaFullAccess"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "quicksight:*"
+                ],
+                "Resource": "*",
+                "Sid": "QuickSightFullAccess"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ecs:*"
+                ],
+                "Resource": "*",
+                "Sid": "ECSFullAccess"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "iam:PassRole",
+                  "iam:ListRoles",
+                  "iam:GetRole"
+                ],
+                "Resource": "*",
+                "Sid": "IAMPassRoleAccess"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "logs:*",
+                  "cloudwatch:*"
+                ],
+                "Resource": "*",
+                "Sid": "LogsAndMonitoringAccess"
+              }
+            ]
+          }
+          EOF
+            )
+            
             # Create custom policy
             policy_arn=$(aws iam create-policy --policy-name "${username}-AML-CC-Policy" --policy-document "$policy_document" --query 'Policy.Arn' --output text 2>/dev/null || aws iam get-policy --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy" --query 'Policy.Arn' --output text)
             
@@ -292,62 +292,62 @@ EOF
           # Get user ARN
           user_arn=$(aws iam get-user --user-name "$username" --query 'User.Arn' --output text)
           
-          echo "- ✅ Created user: $username" >> $GITHUB_STEP_SUMMARY
-          echo "  - ARN: $user_arn" >> $GITHUB_STEP_SUMMARY
-          echo "  - Access Key ID: $access_key_id" >> $GITHUB_STEP_SUMMARY
-          echo "  - Secret Access Key: [HIDDEN - Check AWS Console]" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Created user $username" >> $GITHUB_STEP_SUMMARY
+          echo "  - ARN $user_arn" >> $GITHUB_STEP_SUMMARY
+          echo "  - Access Key ID $access_key_id" >> $GITHUB_STEP_SUMMARY
+          echo "  - Secret Access Key [HIDDEN - Check AWS Console]" >> $GITHUB_STEP_SUMMARY
           
           # Add security group information if created
           if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
-            echo "  - Security Groups:" >> $GITHUB_STEP_SUMMARY
+            echo "  - Security Groups" >> $GITHUB_STEP_SUMMARY
             if [[ "${{ github.event.inputs.security_group_type }}" == "all" ]]; then
-              echo "    - Web SG: ${WEB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
-              echo "    - Database SG: ${DB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
-              echo "    - Application SG: ${APP_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              echo "    - Web SG ${WEB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              echo "    - Database SG ${DB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              echo "    - Application SG ${APP_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
             else
-              echo "    - ${{ github.event.inputs.security_group_type }} SG: ${SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              echo "    - ${{ github.event.inputs.security_group_type }} SG ${SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
             fi
-            echo "  - Policy: Custom AML-CC Policy (restricted to assigned security groups)" >> $GITHUB_STEP_SUMMARY
+            echo "  - Policy Custom AML-CC Policy (restricted to assigned security groups)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "  - Policy: AdministratorAccess (full AWS access)" >> $GITHUB_STEP_SUMMARY
+            echo "  - Policy AdministratorAccess (full AWS access)" >> $GITHUB_STEP_SUMMARY
           fi
           
           # Store credentials securely (you may want to use AWS Secrets Manager)
           echo "::add-mask::$secret_access_key"
           
           echo "" >> $GITHUB_STEP_SUMMARY
-           echo "## User Credentials File" >> $GITHUB_STEP_SUMMARY
-           
-           # Create credentials file for download
-           credentials_file="aws-user-credentials-$(date +%Y%m%d-%H%M%S).txt"
-           
-           # Read the stored user details
-           username=$(cat /tmp/username.txt)
-           password=$(cat /tmp/password.txt)
-           
-           # Create credentials file
-           cat > "$credentials_file" << EOF
-===========================================
-AWS IAM User Credentials - AML-CC-DEV
-Generated: $(date)
-===========================================
-
-User Details:
-  Username: $username
-  Password: $password
-  Sign-in URL: https://console.aws.amazon.com/
-  Note: Password must be changed on first login
-
--------------------------------------------
-
-Group: AML-CC-DEV
-Access Level: $(if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then echo "Service-Specific (5 AWS services)"; else echo "Full AWS Access (AdministratorAccess)"; fi)
-
-EOF
-           
-           echo "📄 Credentials file created: $credentials_file" >> $GITHUB_STEP_SUMMARY
-           echo "📁 File contains login details for user: $username" >> $GITHUB_STEP_SUMMARY
-           echo "💾 Download this file from the workflow artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "## User Credentials File" >> $GITHUB_STEP_SUMMARY
+          
+          # Create credentials file for download
+          credentials_file="aws-user-credentials-$(date +%Y%m%d-%H%M%S).txt"
+          
+          # Read the stored user details
+          username=$(cat /tmp/username.txt)
+          password=$(cat /tmp/password.txt)
+          
+          # Create credentials file
+          cat > "$credentials_file" << 'EOF'
+          ===========================================
+          AWS IAM User Credentials - AML-CC-DEV
+          Generated $(date)
+          ===========================================
+          
+          User Details
+            Username $username
+            Password $password
+            Sign-in URL https://console.aws.amazon.com/
+            Note Password must be changed on first login
+          
+          -------------------------------------------
+          
+          Group AML-CC-DEV
+          Access Level Service-Specific or Full AWS Access
+          
+          EOF
+          
+          echo "📄 Credentials file created $credentials_file" >> $GITHUB_STEP_SUMMARY
+          echo "📁 File contains login details for user $username" >> $GITHUB_STEP_SUMMARY
+          echo "💾 Download this file from the workflow artifacts" >> $GITHUB_STEP_SUMMARY
            
            # Store filename for artifact upload
            echo "CREDENTIALS_FILE=$credentials_file" >> $GITHUB_ENV
