@@ -203,7 +203,7 @@ jobs:
           # Add user to AML-CC-DEV group
           aws iam add-user-to-group --group-name AML-CC-DEV --user-name "$username"
           echo "✅ Added $username to AML-CC-DEV group"
-             
+          
           # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
           if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
               policy_document=$(cat <<EOF
