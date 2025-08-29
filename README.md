@@ -53,7 +53,7 @@ Create a role with the following trust policy:
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:dataruk/AML-CC-INFRA:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": "repo:Srujandatareply28/AML-CC-INFRA:ref:refs/heads/main"
         }
       }
     }
