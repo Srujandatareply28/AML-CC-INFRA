@@ -23,7 +23,7 @@ on:
         default: '1'
         type: string
       email_addresses:
-        description: 'Comma-separated email addresses for user creation (e.g., user1@example.com,user2@example.com)'
+        description: 'Comma-separated email addresses for username generation (e.g., user1@example.com,user2@example.com). Usernames will be created as aml-{part-before-@}.'
         required: false
         default: ''
         type: string
@@ -213,13 +213,10 @@ jobs:
               email=$(echo "$email" | xargs)
               
               # Extract username from email (part before @)
-              username=$(echo "$email" | cut -d'@' -f1 | tr '.' '-' | tr '_' '-')
-              
-              # Ensure username is valid (alphanumeric and hyphens only)
-              username=$(echo "$username" | sed 's/[^a-zA-Z0-9-]//g')
-              
-              # Add prefix to make it unique
-              username="aml-${username}"
+               username=$(echo "$email" | cut -d'@' -f1)
+               
+               # Add prefix to make it unique
+               username="aml-${username}"
               
               echo "Creating user: $username for email: $email"
               
@@ -406,88 +403,72 @@ EOF
           done
           
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Email Notifications" >> $GITHUB_STEP_SUMMARY
-          
-          # Send email notifications if email addresses were provided
-          if [[ -n "$email_addresses" && "$email_addresses" != "" ]]; then
-            echo "📧 Sending email notifications to users..." >> $GITHUB_STEP_SUMMARY
-            
-            # Read the stored arrays
-            readarray -t usernames < /tmp/usernames.txt
-            readarray -t passwords < /tmp/passwords.txt
-            readarray -t emails < /tmp/emails.txt
-            
-            for i in "${!usernames[@]}"; do
-              username="${usernames[$i]}"
-              password="${passwords[$i]}"
-              email="${emails[$i]}"
-              
-              if [[ -n "$email" && "$email" != "" ]]; then
-                # Create email content
-                email_subject="AWS Account Access - AML-CC-DEV"
-                email_body="Hi ${username},
+           echo "## User Credentials File" >> $GITHUB_STEP_SUMMARY
+           
+           # Create credentials file for download
+           credentials_file="aws-user-credentials-$(date +%Y%m%d-%H%M%S).txt"
+           
+           # Read the stored arrays
+           readarray -t usernames < /tmp/usernames.txt
+           readarray -t passwords < /tmp/passwords.txt
+           readarray -t emails < /tmp/emails.txt
+           
+           # Create credentials file header
+           cat > "$credentials_file" << EOF
+===========================================
+AWS IAM User Credentials - AML-CC-DEV
+Generated: $(date)
+===========================================
 
-Please see details below to access the new AJW AWS account.
+EOF
+           
+           # Add credentials to file
+           for i in "${!usernames[@]}"; do
+             username="${usernames[$i]}"
+             password="${passwords[$i]}"
+             email="${emails[$i]}"
+             
+             cat >> "$credentials_file" << EOF
+User #$((i+1)):
+  Email: $email
+  Username: $username
+  Password: $password
+  Sign-in URL: https://console.aws.amazon.com/
+  Note: Password must be changed on first login
 
-Sign-in URL: https://console.aws.amazon.com/
-User name: ${username}
-Password: ${password}
+-------------------------------------------
 
-Note: You will be required to change your password on first login.
+EOF
+           done
+           
+           # Add footer
+           cat >> "$credentials_file" << EOF
+Total Users Created: ${#usernames[@]}
+Group: AML-CC-DEV
+Access Level: $(if [[ \"${{ github.event.inputs.create_security_groups }}\" == \"true\" ]]; then echo \"Service-Specific (5 AWS services)\"; else echo \"Full AWS Access (AdministratorAccess)\"; fi)
 
-Best regards,
-AML-CC Team"
-                
-                # Log email details (without password for security)
-                echo "📧 Email prepared for: $email (User: $username)" >> $GITHUB_STEP_SUMMARY
-                echo "   Subject: $email_subject" >> $GITHUB_STEP_SUMMARY
-                echo "   Sign-in URL: https://console.aws.amazon.com/" >> $GITHUB_STEP_SUMMARY
-                echo "   Username: $username" >> $GITHUB_STEP_SUMMARY
-                echo "   Password: [GENERATED - Check logs for details]" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-                
-                # Log to console for debugging (this will be visible in GitHub Actions logs)
-                echo "=== EMAIL NOTIFICATION ==="
-                echo "To: $email"
-                echo "Subject: $email_subject"
-                echo "Username: $username"
-                echo "Password: $password"
-                echo "========================="
-              fi
-            done
-            
-            echo "✅ Email notifications prepared for ${#emails[@]} users" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "ℹ️ No email addresses provided - credentials logged in GitHub Actions output" >> $GITHUB_STEP_SUMMARY
-            
-            # Log credentials for manual distribution
-            readarray -t usernames < /tmp/usernames.txt
-            readarray -t passwords < /tmp/passwords.txt
-            
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### User Credentials" >> $GITHUB_STEP_SUMMARY
-            for i in "${!usernames[@]}"; do
-              username="${usernames[$i]}"
-              password="${passwords[$i]}"
-              echo "- **User:** ${username}" >> $GITHUB_STEP_SUMMARY
-              echo "  - **Sign-in URL:** https://console.aws.amazon.com/" >> $GITHUB_STEP_SUMMARY
-              echo "  - **Password:** [Check GitHub Actions logs]" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              
-              # Log to console
-              echo "=== USER CREDENTIALS ==="
-              echo "Username: $username"
-              echo "Password: $password"
-              echo "Sign-in URL: https://console.aws.amazon.com/"
-              echo "======================="
-            done
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
+EOF
+           
+           echo "📄 Credentials file created: $credentials_file" >> $GITHUB_STEP_SUMMARY
+           echo "📁 File contains login details for ${#usernames[@]} users" >> $GITHUB_STEP_SUMMARY
+           echo "💾 Download this file from the workflow artifacts" >> $GITHUB_STEP_SUMMARY
+           
+           # Store filename for artifact upload
+           echo "CREDENTIALS_FILE=$credentials_file" >> $GITHUB_ENV
+           
+           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ **Security Note**: Access keys have been created. Please:" >> $GITHUB_STEP_SUMMARY
           echo "1. Retrieve secret keys from AWS Console immediately" >> $GITHUB_STEP_SUMMARY
           echo "2. Enable MFA for all users" >> $GITHUB_STEP_SUMMARY
           echo "3. Follow principle of least privilege" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload Credentials File
+        if: github.event.inputs.action == 'create' && env.CREDENTIALS_FILE != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-user-credentials
+          path: ${{ env.CREDENTIALS_FILE }}
+          retention-days: 7
       
       - name: Delete IAM Users
         if: github.event.inputs.action == 'delete'
