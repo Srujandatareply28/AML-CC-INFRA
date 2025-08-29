@@ -70,7 +70,7 @@ jobs:
           fi
       
       - name: Create IAM User Group
-        if: github.event.inputs.action == 'create'
+        if: ${{ github.event.inputs.action == 'create' }}
         run: |
           echo "Creating IAM user group: AML-CC-DEV"
           
@@ -93,7 +93,7 @@ jobs:
           fi
 
       - name: Create Security Groups
-        if: github.event.inputs.action == 'create' && github.event.inputs.create_security_groups == 'true'
+        if: ${{ github.event.inputs.action == 'create' && github.event.inputs.create_security_groups == 'true' }}
         run: |
           base_username="${{ github.event.inputs.username }}"
           sg_type="${{ github.event.inputs.security_group_type }}"
@@ -173,7 +173,7 @@ jobs:
           fi
       
       - name: Create IAM User
-        if: github.event.inputs.action == 'create'
+        if: ${{ github.event.inputs.action == 'create' }}
         run: |
           username="${{ github.event.inputs.username }}"
           
@@ -348,18 +348,19 @@ jobs:
           echo "📄 Credentials file created $credentials_file" >> $GITHUB_STEP_SUMMARY
           echo "📁 File contains login details for user $username" >> $GITHUB_STEP_SUMMARY
           echo "💾 Download this file from the workflow artifacts" >> $GITHUB_STEP_SUMMARY
-           
-           # Store filename for artifact upload
-           echo "CREDENTIALS_FILE=$credentials_file" >> $GITHUB_ENV
-           
-           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Security Note**: Access keys have been created. Please:" >> $GITHUB_STEP_SUMMARY
+
+          # Store filename for artifact upload
+          echo "CREDENTIALS_FILE=$credentials_file" >> $GITHUB_ENV
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Security Note: Access keys have been created. Please:" >> $GITHUB_STEP_SUMMARY
           echo "1. Retrieve secret keys from AWS Console immediately" >> $GITHUB_STEP_SUMMARY
           echo "2. Enable MFA for all users" >> $GITHUB_STEP_SUMMARY
           echo "3. Follow principle of least privilege" >> $GITHUB_STEP_SUMMARY
+
       
       - name: Upload Credentials File
-        if: github.event.inputs.action == 'create' && env.CREDENTIALS_FILE != ''
+        if: ${{ github.event.inputs.action == 'create' && env.CREDENTIALS_FILE != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: aws-user-credentials
@@ -367,7 +368,7 @@ jobs:
           retention-days: 7
       
       - name: Delete IAM User
-        if: github.event.inputs.action == 'delete'
+        if: ${{ github.event.inputs.action == 'delete' }}
         run: |
           username="${{ github.event.inputs.username }}"
           
@@ -409,7 +410,7 @@ jobs:
           echo "- ✅ Deleted user: $username" >> $GITHUB_STEP_SUMMARY
       
       - name: Delete Security Groups
-        if: github.event.inputs.action == 'delete' && github.event.inputs.create_security_groups == 'true'
+        if: ${{ github.event.inputs.action == 'delete' && github.event.inputs.create_security_groups == 'true' }}
         run: |
           username="${{ github.event.inputs.username }}"
           sg_type="${{ github.event.inputs.security_group_type }}"
@@ -458,7 +459,7 @@ jobs:
           fi
       
       - name: List IAM Users
-        if: github.event.inputs.action == 'list'
+        if: ${{ github.event.inputs.action == 'list' }}
         run: |
           echo "## Current IAM Users" >> $GITHUB_STEP_SUMMARY
           
@@ -502,23 +503,23 @@ jobs:
           echo "## AWS Services Access Summary" >> $GITHUB_STEP_SUMMARY
           
           if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
-            echo "**With Security Groups (Restricted Access):**" >> $GITHUB_STEP_SUMMARY
-            echo "- **S3**: Full access to all S3 buckets and objects" >> $GITHUB_STEP_SUMMARY
-            echo "- **SageMaker**: Complete access to all SageMaker services (including Model Registry)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Lambda**: Full access to all Lambda functions and layers" >> $GITHUB_STEP_SUMMARY
-            echo "- **QuickSight**: Complete access to all QuickSight resources" >> $GITHUB_STEP_SUMMARY
-            echo "- **ECS**: Full access to all Elastic Container Service resources" >> $GITHUB_STEP_SUMMARY
-            echo "- **CloudWatch & Logs**: Full monitoring and logging access" >> $GITHUB_STEP_SUMMARY
-            echo "- **IAM**: Limited to PassRole, ListRoles, and GetRole permissions" >> $GITHUB_STEP_SUMMARY
+            echo "With Security Groups (Restricted Access):" >> $GITHUB_STEP_SUMMARY
+            echo "- S3 Full access to all S3 buckets and objects" >> $GITHUB_STEP_SUMMARY
+            echo "- SageMaker Complete access to all SageMaker services (including Model Registry)" >> $GITHUB_STEP_SUMMARY
+            echo "- Lambda Full access to all Lambda functions and layers" >> $GITHUB_STEP_SUMMARY
+            echo "- QuickSight Complete access to all QuickSight resources" >> $GITHUB_STEP_SUMMARY
+            echo "- ECS Full access to all Elastic Container Service resources" >> $GITHUB_STEP_SUMMARY
+            echo "- CloudWatch & Logs Full monitoring and logging access" >> $GITHUB_STEP_SUMMARY
+            echo "- IAM Limited to PassRole, ListRoles, and GetRole permissions" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**With AdministratorAccess (Full Access):**" >> $GITHUB_STEP_SUMMARY
-            echo "- **All AWS Services**: Complete access to all AWS services and resources" >> $GITHUB_STEP_SUMMARY
-            echo "- **EC2**: Full compute service access" >> $GITHUB_STEP_SUMMARY
-            echo "- **S3**: All storage service access" >> $GITHUB_STEP_SUMMARY
-            echo "- **IAM**: Full identity and access management" >> $GITHUB_STEP_SUMMARY
-            echo "- **VPC**: Complete networking service access" >> $GITHUB_STEP_SUMMARY
-            echo "- **RDS**: Full database service access" >> $GITHUB_STEP_SUMMARY
-            echo "- **Lambda**: Complete serverless compute access" >> $GITHUB_STEP_SUMMARY
-            echo "- **CloudFormation**: Full infrastructure as code access" >> $GITHUB_STEP_SUMMARY
-            echo "- **And 200+ other AWS services..." >> $GITHUB_STEP_SUMMARY
+            echo "With AdministratorAccess (Full Access):" >> $GITHUB_STEP_SUMMARY
+            echo "- All AWS Services Complete access to all AWS services and resources" >> $GITHUB_STEP_SUMMARY
+            echo "- EC2 Full compute service access" >> $GITHUB_STEP_SUMMARY
+            echo "- S3 All storage service access" >> $GITHUB_STEP_SUMMARY
+            echo "- IAM Full identity and access management" >> $GITHUB_STEP_SUMMARY
+            echo "- VPC Complete networking service access" >> $GITHUB_STEP_SUMMARY
+            echo "- RDS Full database service access" >> $GITHUB_STEP_SUMMARY
+            echo "- Lambda Complete serverless compute access" >> $GITHUB_STEP_SUMMARY
+            echo "- CloudFormation Full infrastructure as code access" >> $GITHUB_STEP_SUMMARY
+            echo "- And 200+ other AWS services..." >> $GITHUB_STEP_SUMMARY
           fi
