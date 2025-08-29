@@ -13,14 +13,19 @@ on:
           - delete
           - list
       username:
-        description: 'Base username for IAM users (e.g., aml-user)'
+        description: 'Base username for IAM user(s) (used when email_addresses is not provided)'
         required: false
         default: 'aml-user'
         type: string
       user_count:
-        description: 'Number of users to create (1-10)'
+        description: 'Number of users to create (used when email_addresses is not provided)'
         required: false
         default: '1'
+        type: string
+      email_addresses:
+        description: 'Comma-separated email addresses for user creation (e.g., user1@example.com,user2@example.com)'
+        required: false
+        default: ''
         type: string
       create_security_groups:
         description: 'Create security groups for users'
@@ -80,6 +85,29 @@ jobs:
             fi
           fi
       
+      - name: Create IAM User Group
+        if: github.event.inputs.action == 'create'
+        run: |
+          echo "Creating IAM user group: AML-CC-DEV"
+          
+          # Check if group already exists
+          if aws iam get-group --group-name AML-CC-DEV >/dev/null 2>&1; then
+            echo "✅ Group AML-CC-DEV already exists"
+          else
+            # Create the group
+            aws iam create-group --group-name AML-CC-DEV --path /
+            echo "✅ Created IAM group: AML-CC-DEV"
+          fi
+          
+          # Attach policies to the group based on security group settings
+          if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+            echo "Will attach custom AML-CC policy to group later"
+          else
+            # Attach AdministratorAccess to the group
+            aws iam attach-group-policy --group-name AML-CC-DEV --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+            echo "✅ Attached AdministratorAccess policy to AML-CC-DEV group"
+          fi
+
       - name: Create Security Groups
         if: github.event.inputs.action == 'create' && github.event.inputs.create_security_groups == 'true'
         run: |
@@ -163,29 +191,110 @@ jobs:
       - name: Create IAM Users
         if: github.event.inputs.action == 'create'
         run: |
+          email_addresses="${{ github.event.inputs.email_addresses }}"
           base_username="${{ github.event.inputs.username }}"
           user_count="${{ github.event.inputs.user_count }}"
           
           echo "## Creating IAM Users" >> $GITHUB_STEP_SUMMARY
           
-          for i in $(seq 1 $user_count); do
-            if [ $user_count -eq 1 ]; then
-              username="$base_username"
-            else
-              username="${base_username}-${i}"
-            fi
+          # Initialize arrays for storing user details
+          declare -a usernames
+          declare -a passwords
+          declare -a emails
+          
+          if [[ -n "$email_addresses" && "$email_addresses" != "" ]]; then
+            echo "Creating IAM users based on email addresses: $email_addresses"
             
-            # Check if user already exists
-            if aws iam get-user --user-name "$username" 2>/dev/null; then
-              echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
-              continue
-            fi
+            # Split email addresses by comma
+            IFS=',' read -ra EMAIL_ARRAY <<< "$email_addresses"
             
-            # Create IAM user
-            aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions
+            for email in "${EMAIL_ARRAY[@]}"; do
+              # Trim whitespace
+              email=$(echo "$email" | xargs)
+              
+              # Extract username from email (part before @)
+              username=$(echo "$email" | cut -d'@' -f1 | tr '.' '-' | tr '_' '-')
+              
+              # Ensure username is valid (alphanumeric and hyphens only)
+              username=$(echo "$username" | sed 's/[^a-zA-Z0-9-]//g')
+              
+              # Add prefix to make it unique
+              username="aml-${username}"
+              
+              echo "Creating user: $username for email: $email"
+              
+              # Check if user already exists
+              if aws iam get-user --user-name "$username" 2>/dev/null; then
+                echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
+                continue
+              fi
+              
+              # Generate random password
+              password=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
+              
+              # Create IAM user with tags
+              aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions Key=Email,Value="$email"
+              
+              # Create login profile with generated password
+              aws iam create-login-profile --user-name "$username" --password "$password" --password-reset-required
+              
+              # Store details for later use
+              usernames+=("$username")
+              passwords+=("$password")
+              emails+=("$email")
+              
+              echo "✅ Created user: $username with login profile"
+            done
+          else
+            echo "Creating $user_count IAM user(s) with base name: $base_username"
             
-            # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
-            if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+            for i in $(seq 1 $user_count); do
+              if [ $user_count -eq 1 ]; then
+                username="$base_username"
+              else
+                username="${base_username}-${i}"
+              fi
+              
+              # Check if user already exists
+              if aws iam get-user --user-name "$username" 2>/dev/null; then
+                echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
+                continue
+              fi
+              
+              # Generate random password
+              password=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
+              
+              # Create IAM user with tags
+              aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions
+              
+              # Create login profile with generated password
+              aws iam create-login-profile --user-name "$username" --password "$password" --password-reset-required
+              
+              # Store details for later use
+              usernames+=("$username")
+              passwords+=("$password")
+              emails+=("")
+              
+              echo "✅ Created user: $username with login profile"
+            done
+          fi
+          
+          # Export arrays as environment variables for next steps
+          printf '%s\n' "${usernames[@]}" > /tmp/usernames.txt
+          printf '%s\n' "${passwords[@]}" > /tmp/passwords.txt
+          printf '%s\n' "${emails[@]}" > /tmp/emails.txt
+          
+          echo "USER_COUNT=${#usernames[@]}" >> $GITHUB_ENV
+          
+          # Continue with policy attachment and group assignment for each created user
+           for username in "${usernames[@]}"; do
+             
+             # Add user to AML-CC-DEV group
+             aws iam add-user-to-group --group-name AML-CC-DEV --user-name "$username"
+             echo "✅ Added $username to AML-CC-DEV group"
+             
+             # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
+             if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
               policy_document=$(cat <<EOF
 {
   "Version": "2012-10-17",
@@ -295,6 +404,84 @@ EOF
             # Store credentials securely (you may want to use AWS Secrets Manager)
             echo "::add-mask::$secret_access_key"
           done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Email Notifications" >> $GITHUB_STEP_SUMMARY
+          
+          # Send email notifications if email addresses were provided
+          if [[ -n "$email_addresses" && "$email_addresses" != "" ]]; then
+            echo "📧 Sending email notifications to users..." >> $GITHUB_STEP_SUMMARY
+            
+            # Read the stored arrays
+            readarray -t usernames < /tmp/usernames.txt
+            readarray -t passwords < /tmp/passwords.txt
+            readarray -t emails < /tmp/emails.txt
+            
+            for i in "${!usernames[@]}"; do
+              username="${usernames[$i]}"
+              password="${passwords[$i]}"
+              email="${emails[$i]}"
+              
+              if [[ -n "$email" && "$email" != "" ]]; then
+                # Create email content
+                email_subject="AWS Account Access - AML-CC-DEV"
+                email_body="Hi ${username},
+
+Please see details below to access the new AJW AWS account.
+
+Sign-in URL: https://console.aws.amazon.com/
+User name: ${username}
+Password: ${password}
+
+Note: You will be required to change your password on first login.
+
+Best regards,
+AML-CC Team"
+                
+                # Log email details (without password for security)
+                echo "📧 Email prepared for: $email (User: $username)" >> $GITHUB_STEP_SUMMARY
+                echo "   Subject: $email_subject" >> $GITHUB_STEP_SUMMARY
+                echo "   Sign-in URL: https://console.aws.amazon.com/" >> $GITHUB_STEP_SUMMARY
+                echo "   Username: $username" >> $GITHUB_STEP_SUMMARY
+                echo "   Password: [GENERATED - Check logs for details]" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Log to console for debugging (this will be visible in GitHub Actions logs)
+                echo "=== EMAIL NOTIFICATION ==="
+                echo "To: $email"
+                echo "Subject: $email_subject"
+                echo "Username: $username"
+                echo "Password: $password"
+                echo "========================="
+              fi
+            done
+            
+            echo "✅ Email notifications prepared for ${#emails[@]} users" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ No email addresses provided - credentials logged in GitHub Actions output" >> $GITHUB_STEP_SUMMARY
+            
+            # Log credentials for manual distribution
+            readarray -t usernames < /tmp/usernames.txt
+            readarray -t passwords < /tmp/passwords.txt
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### User Credentials" >> $GITHUB_STEP_SUMMARY
+            for i in "${!usernames[@]}"; do
+              username="${usernames[$i]}"
+              password="${passwords[$i]}"
+              echo "- **User:** ${username}" >> $GITHUB_STEP_SUMMARY
+              echo "  - **Sign-in URL:** https://console.aws.amazon.com/" >> $GITHUB_STEP_SUMMARY
+              echo "  - **Password:** [Check GitHub Actions logs]" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Log to console
+              echo "=== USER CREDENTIALS ==="
+              echo "Username: $username"
+              echo "Password: $password"
+              echo "Sign-in URL: https://console.aws.amazon.com/"
+              echo "======================="
+            done
+          fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ **Security Note**: Access keys have been created. Please:" >> $GITHUB_STEP_SUMMARY
@@ -437,6 +624,12 @@ EOF
           echo "- ⚠️ **Remember**: Enable MFA for created users" >> $GITHUB_STEP_SUMMARY
           echo "- ⚠️ **Remember**: Regularly rotate access keys" >> $GITHUB_STEP_SUMMARY
           echo "- ⚠️ **Remember**: Monitor CloudTrail logs for unusual activity" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## User Group Information" >> $GITHUB_STEP_SUMMARY
+          echo "👥 **Group Name**: AML-CC-DEV" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **Group Policy**: $(if [[ \"${{ github.event.inputs.create_security_groups }}\" == \"true\" ]]; then echo \"Custom Service-Specific Policy\"; else echo \"AdministratorAccess\"; fi)" >> $GITHUB_STEP_SUMMARY
+          echo "👤 **Members**: All created IAM users are automatically added to this group" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## AWS Services Access Summary" >> $GITHUB_STEP_SUMMARY
