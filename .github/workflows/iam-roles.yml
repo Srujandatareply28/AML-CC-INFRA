@@ -13,19 +13,9 @@ on:
           - delete
           - list
       username:
-        description: 'Base username for IAM user(s) (used when email_addresses is not provided)'
-        required: false
+        description: 'Username for IAM user'
+        required: true
         default: 'aml-user'
-        type: string
-      user_count:
-        description: 'Number of users to create (used when email_addresses is not provided)'
-        required: false
-        default: '1'
-        type: string
-      email_addresses:
-        description: 'Comma-separated email addresses for username generation (e.g., user1@example.com,user2@example.com). Usernames will be created as aml-{part-before-@}.'
-        required: false
-        default: ''
         type: string
       create_security_groups:
         description: 'Create security groups for users'
@@ -75,12 +65,6 @@ jobs:
           if [[ "${{ github.event.inputs.action }}" == "create" || "${{ github.event.inputs.action }}" == "delete" ]]; then
             if [[ -z "${{ github.event.inputs.username }}" ]]; then
               echo "Error: Username is required for create/delete actions"
-              exit 1
-            fi
-            
-            user_count="${{ github.event.inputs.user_count }}"
-            if ! [[ "$user_count" =~ ^[1-9]$|^10$ ]]; then
-              echo "Error: User count must be between 1 and 10"
               exit 1
             fi
           fi
@@ -188,110 +172,40 @@ jobs:
             echo "SG_ID=$sg_id" >> $GITHUB_ENV
           fi
       
-      - name: Create IAM Users
+      - name: Create IAM User
         if: github.event.inputs.action == 'create'
         run: |
-          email_addresses="${{ github.event.inputs.email_addresses }}"
-          base_username="${{ github.event.inputs.username }}"
-          user_count="${{ github.event.inputs.user_count }}"
+          username="${{ github.event.inputs.username }}"
           
-          echo "## Creating IAM Users" >> $GITHUB_STEP_SUMMARY
+          echo "## Creating IAM User" >> $GITHUB_STEP_SUMMARY
           
-          # Initialize arrays for storing user details
-          declare -a usernames
-          declare -a passwords
-          declare -a emails
-          
-          if [[ -n "$email_addresses" && "$email_addresses" != "" ]]; then
-            echo "Creating IAM users based on email addresses: $email_addresses"
-            
-            # Split email addresses by comma
-            IFS=',' read -ra EMAIL_ARRAY <<< "$email_addresses"
-            
-            for email in "${EMAIL_ARRAY[@]}"; do
-              # Trim whitespace
-              email=$(echo "$email" | xargs)
-              
-              # Extract username from email (part before @)
-               username=$(echo "$email" | cut -d'@' -f1)
-               
-               # Add prefix to make it unique
-               username="aml-${username}"
-              
-              echo "Creating user: $username for email: $email"
-              
-              # Check if user already exists
-              if aws iam get-user --user-name "$username" 2>/dev/null; then
-                echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
-                continue
-              fi
-              
-              # Generate random password
-              password=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
-              
-              # Create IAM user with tags
-              aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions Key=Email,Value="$email"
-              
-              # Create login profile with generated password
-              aws iam create-login-profile --user-name "$username" --password "$password" --password-reset-required
-              
-              # Store details for later use
-              usernames+=("$username")
-              passwords+=("$password")
-              emails+=("$email")
-              
-              echo "✅ Created user: $username with login profile"
-            done
-          else
-            echo "Creating $user_count IAM user(s) with base name: $base_username"
-            
-            for i in $(seq 1 $user_count); do
-              if [ $user_count -eq 1 ]; then
-                username="$base_username"
-              else
-                username="${base_username}-${i}"
-              fi
-              
-              # Check if user already exists
-              if aws iam get-user --user-name "$username" 2>/dev/null; then
-                echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
-                continue
-              fi
-              
-              # Generate random password
-              password=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
-              
-              # Create IAM user with tags
-              aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions
-              
-              # Create login profile with generated password
-              aws iam create-login-profile --user-name "$username" --password "$password" --password-reset-required
-              
-              # Store details for later use
-              usernames+=("$username")
-              passwords+=("$password")
-              emails+=("")
-              
-              echo "✅ Created user: $username with login profile"
-            done
+          # Check if user already exists
+          if aws iam get-user --user-name "$username" 2>/dev/null; then
+            echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
+            exit 0
           fi
           
-          # Export arrays as environment variables for next steps
-          printf '%s\n' "${usernames[@]}" > /tmp/usernames.txt
-          printf '%s\n' "${passwords[@]}" > /tmp/passwords.txt
-          printf '%s\n' "${emails[@]}" > /tmp/emails.txt
+          # Generate random password
+          password=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
           
-          echo "USER_COUNT=${#usernames[@]}" >> $GITHUB_ENV
+          # Create IAM user with tags
+          aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions
           
-          # Continue with policy attachment and group assignment for each created user
-           for username in "${usernames[@]}"; do
+          # Create login profile with generated password
+          aws iam create-login-profile --user-name "$username" --password "$password" --password-reset-required
+          
+          # Store details for later use
+          echo "$username" > /tmp/username.txt
+          echo "$password" > /tmp/password.txt
+          
+          echo "✅ Created user: $username with login profile"
+          
+          # Add user to AML-CC-DEV group
+          aws iam add-user-to-group --group-name AML-CC-DEV --user-name "$username"
+          echo "✅ Added $username to AML-CC-DEV group"
              
-             # Add user to AML-CC-DEV group
-             aws iam add-user-to-group --group-name AML-CC-DEV --user-name "$username"
-             echo "✅ Added $username to AML-CC-DEV group"
-             
-             # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
-             if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+          # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
+          if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
               policy_document=$(cat <<EOF
 {
   "Version": "2012-10-17",
@@ -360,47 +274,46 @@ jobs:
 EOF
               )
               
-              # Create custom policy
-              policy_arn=$(aws iam create-policy --policy-name "${username}-AML-CC-Policy" --policy-document "$policy_document" --query 'Policy.Arn' --output text 2>/dev/null || aws iam get-policy --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy" --query 'Policy.Arn' --output text)
-              
-              # Attach custom policy
-              aws iam attach-user-policy --user-name "$username" --policy-arn "$policy_arn"
+            # Create custom policy
+            policy_arn=$(aws iam create-policy --policy-name "${username}-AML-CC-Policy" --policy-document "$policy_document" --query 'Policy.Arn' --output text 2>/dev/null || aws iam get-policy --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy" --query 'Policy.Arn' --output text)
+            
+            # Attach custom policy
+            aws iam attach-user-policy --user-name "$username" --policy-arn "$policy_arn"
+          else
+            # Attach AdministratorAccess policy (original behavior)
+            aws iam attach-user-policy --user-name "$username" --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+          fi
+          
+          # Create access key
+          access_key_output=$(aws iam create-access-key --user-name "$username")
+          access_key_id=$(echo "$access_key_output" | jq -r '.AccessKey.AccessKeyId')
+          secret_access_key=$(echo "$access_key_output" | jq -r '.AccessKey.SecretAccessKey')
+          
+          # Get user ARN
+          user_arn=$(aws iam get-user --user-name "$username" --query 'User.Arn' --output text)
+          
+          echo "- ✅ Created user: $username" >> $GITHUB_STEP_SUMMARY
+          echo "  - ARN: $user_arn" >> $GITHUB_STEP_SUMMARY
+          echo "  - Access Key ID: $access_key_id" >> $GITHUB_STEP_SUMMARY
+          echo "  - Secret Access Key: [HIDDEN - Check AWS Console]" >> $GITHUB_STEP_SUMMARY
+          
+          # Add security group information if created
+          if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+            echo "  - Security Groups:" >> $GITHUB_STEP_SUMMARY
+            if [[ "${{ github.event.inputs.security_group_type }}" == "all" ]]; then
+              echo "    - Web SG: ${WEB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              echo "    - Database SG: ${DB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              echo "    - Application SG: ${APP_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
             else
-              # Attach AdministratorAccess policy (original behavior)
-              aws iam attach-user-policy --user-name "$username" --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+              echo "    - ${{ github.event.inputs.security_group_type }} SG: ${SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
             fi
-            
-            # Create access key
-            access_key_output=$(aws iam create-access-key --user-name "$username")
-            access_key_id=$(echo "$access_key_output" | jq -r '.AccessKey.AccessKeyId')
-            secret_access_key=$(echo "$access_key_output" | jq -r '.AccessKey.SecretAccessKey')
-            
-            # Get user ARN
-            user_arn=$(aws iam get-user --user-name "$username" --query 'User.Arn' --output text)
-            
-            echo "- ✅ Created user: $username" >> $GITHUB_STEP_SUMMARY
-            echo "  - ARN: $user_arn" >> $GITHUB_STEP_SUMMARY
-            echo "  - Access Key ID: $access_key_id" >> $GITHUB_STEP_SUMMARY
-            echo "  - Secret Access Key: [HIDDEN - Check AWS Console]" >> $GITHUB_STEP_SUMMARY
-            
-            # Add security group information if created
-            if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
-              echo "  - Security Groups:" >> $GITHUB_STEP_SUMMARY
-              if [[ "${{ github.event.inputs.security_group_type }}" == "all" ]]; then
-                echo "    - Web SG: ${WEB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
-                echo "    - Database SG: ${DB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
-                echo "    - Application SG: ${APP_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "    - ${{ github.event.inputs.security_group_type }} SG: ${SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
-              fi
-              echo "  - Policy: Custom AML-CC Policy (restricted to assigned security groups)" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "  - Policy: AdministratorAccess (full AWS access)" >> $GITHUB_STEP_SUMMARY
-            fi
-            
-            # Store credentials securely (you may want to use AWS Secrets Manager)
-            echo "::add-mask::$secret_access_key"
-          done
+            echo "  - Policy: Custom AML-CC Policy (restricted to assigned security groups)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "  - Policy: AdministratorAccess (full AWS access)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Store credentials securely (you may want to use AWS Secrets Manager)
+          echo "::add-mask::$secret_access_key"
           
           echo "" >> $GITHUB_STEP_SUMMARY
            echo "## User Credentials File" >> $GITHUB_STEP_SUMMARY
@@ -408,29 +321,18 @@ EOF
            # Create credentials file for download
            credentials_file="aws-user-credentials-$(date +%Y%m%d-%H%M%S).txt"
            
-           # Read the stored arrays
-           readarray -t usernames < /tmp/usernames.txt
-           readarray -t passwords < /tmp/passwords.txt
-           readarray -t emails < /tmp/emails.txt
+           # Read the stored user details
+           username=$(cat /tmp/username.txt)
+           password=$(cat /tmp/password.txt)
            
-           # Create credentials file header
+           # Create credentials file
            cat > "$credentials_file" << EOF
 ===========================================
 AWS IAM User Credentials - AML-CC-DEV
 Generated: $(date)
 ===========================================
 
-EOF
-           
-           # Add credentials to file
-           for i in "${!usernames[@]}"; do
-             username="${usernames[$i]}"
-             password="${passwords[$i]}"
-             email="${emails[$i]}"
-             
-             cat >> "$credentials_file" << EOF
-User #$((i+1)):
-  Email: $email
+User Details:
   Username: $username
   Password: $password
   Sign-in URL: https://console.aws.amazon.com/
@@ -438,19 +340,13 @@ User #$((i+1)):
 
 -------------------------------------------
 
-EOF
-           done
-           
-           # Add footer
-           cat >> "$credentials_file" << EOF
-Total Users Created: ${#usernames[@]}
 Group: AML-CC-DEV
-Access Level: $(if [[ \"${{ github.event.inputs.create_security_groups }}\" == \"true\" ]]; then echo \"Service-Specific (5 AWS services)\"; else echo \"Full AWS Access (AdministratorAccess)\"; fi)
+Access Level: $(if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then echo "Service-Specific (5 AWS services)"; else echo "Full AWS Access (AdministratorAccess)"; fi)
 
 EOF
            
            echo "📄 Credentials file created: $credentials_file" >> $GITHUB_STEP_SUMMARY
-           echo "📁 File contains login details for ${#usernames[@]} users" >> $GITHUB_STEP_SUMMARY
+           echo "📁 File contains login details for user: $username" >> $GITHUB_STEP_SUMMARY
            echo "💾 Download this file from the workflow artifacts" >> $GITHUB_STEP_SUMMARY
            
            # Store filename for artifact upload
@@ -470,61 +366,52 @@ EOF
           path: ${{ env.CREDENTIALS_FILE }}
           retention-days: 7
       
-      - name: Delete IAM Users
+      - name: Delete IAM User
         if: github.event.inputs.action == 'delete'
         run: |
-          base_username="${{ github.event.inputs.username }}"
-          user_count="${{ github.event.inputs.user_count }}"
+          username="${{ github.event.inputs.username }}"
           
-          echo "## Deleting IAM Users" >> $GITHUB_STEP_SUMMARY
+          echo "## Deleting IAM User" >> $GITHUB_STEP_SUMMARY
           
-          for i in $(seq 1 $user_count); do
-            if [ $user_count -eq 1 ]; then
-              username="$base_username"
-            else
-              username="${base_username}-${i}"
-            fi
-            
-            # Check if user exists
-            if ! aws iam get-user --user-name "$username" 2>/dev/null; then
-              echo "⚠️ User $username does not exist, skipping..." >> $GITHUB_STEP_SUMMARY
-              continue
-            fi
-            
-            # Delete access keys
-            access_keys=$(aws iam list-access-keys --user-name "$username" --query 'AccessKeyMetadata[].AccessKeyId' --output text)
-            for key in $access_keys; do
-              aws iam delete-access-key --user-name "$username" --access-key-id "$key"
-            done
-            
-            # Detach policies
-            attached_policies=$(aws iam list-attached-user-policies --user-name "$username" --query 'AttachedPolicies[].PolicyArn' --output text)
-            for policy in $attached_policies; do
-              aws iam detach-user-policy --user-name "$username" --policy-arn "$policy"
-            done
-            
-            # Delete inline policies
-            inline_policies=$(aws iam list-user-policies --user-name "$username" --query 'PolicyNames' --output text)
-            for policy in $inline_policies; do
-              aws iam delete-user-policy --user-name "$username" --policy-name "$policy"
-            done
-            
-            # Delete custom policy if it exists
-            policy_arn="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy"
-            if aws iam get-policy --policy-arn "$policy_arn" 2>/dev/null; then
-              aws iam delete-policy --policy-arn "$policy_arn"
-            fi
-            
-            # Delete user
-            aws iam delete-user --user-name "$username"
-            
-            echo "- ✅ Deleted user: $username" >> $GITHUB_STEP_SUMMARY
+          # Check if user exists
+          if ! aws iam get-user --user-name "$username" 2>/dev/null; then
+            echo "⚠️ User $username does not exist, skipping..." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          
+          # Delete access keys
+          access_keys=$(aws iam list-access-keys --user-name "$username" --query 'AccessKeyMetadata[].AccessKeyId' --output text)
+          for key in $access_keys; do
+            aws iam delete-access-key --user-name "$username" --access-key-id "$key"
+          done
+          
+          # Detach policies
+          attached_policies=$(aws iam list-attached-user-policies --user-name "$username" --query 'AttachedPolicies[].PolicyArn' --output text)
+          for policy in $attached_policies; do
+            aws iam detach-user-policy --user-name "$username" --policy-arn "$policy"
+          done
+          
+          # Delete inline policies
+          inline_policies=$(aws iam list-user-policies --user-name "$username" --query 'PolicyNames' --output text)
+          for policy in $inline_policies; do
+            aws iam delete-user-policy --user-name "$username" --policy-name "$policy"
+          done
+          
+          # Delete custom policy if it exists
+          policy_arn="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy"
+          if aws iam get-policy --policy-arn "$policy_arn" 2>/dev/null; then
+            aws iam delete-policy --policy-arn "$policy_arn"
+          fi
+          
+          # Delete user
+          aws iam delete-user --user-name "$username"
+          
+          echo "- ✅ Deleted user: $username" >> $GITHUB_STEP_SUMMARY
       
       - name: Delete Security Groups
         if: github.event.inputs.action == 'delete' && github.event.inputs.create_security_groups == 'true'
         run: |
-          base_username="${{ github.event.inputs.username }}"
-          user_count="${{ github.event.inputs.user_count }}"
+          username="${{ github.event.inputs.username }}"
           sg_type="${{ github.event.inputs.security_group_type }}"
           vpc_id="${{ github.event.inputs.vpc_id }}"
           
@@ -563,13 +450,12 @@ EOF
           
           # Delete security groups based on type
           if [[ "$sg_type" == "all" ]]; then
-            delete_sg "${base_username}-web-sg"
-            delete_sg "${base_username}-db-sg"
-            delete_sg "${base_username}-app-sg"
+            delete_sg "${username}-web-sg"
+            delete_sg "${username}-db-sg"
+            delete_sg "${username}-app-sg"
           else
-            delete_sg "${base_username}-${sg_type}-sg"
+            delete_sg "${username}-${sg_type}-sg"
           fi
-          done
       
       - name: List IAM Users
         if: github.event.inputs.action == 'list'
