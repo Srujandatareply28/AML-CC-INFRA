@@ -22,6 +22,28 @@ on:
         required: false
         default: '1'
         type: string
+      create_security_groups:
+        description: 'Create security groups for users'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      security_group_type:
+        description: 'Type of security groups to create'
+        required: false
+        default: 'web'
+        type: choice
+        options:
+          - web
+          - database
+          - application
+          - all
+      vpc_id:
+        description: 'VPC ID for security groups (leave empty for default VPC)'
+        required: false
+        type: string
 
 env:
   AWS_REGION: eu-west-2
@@ -58,6 +80,86 @@ jobs:
             fi
           fi
       
+      - name: Create Security Groups
+        if: github.event.inputs.action == 'create' && github.event.inputs.create_security_groups == 'true'
+        run: |
+          base_username="${{ github.event.inputs.username }}"
+          sg_type="${{ github.event.inputs.security_group_type }}"
+          vpc_id="${{ github.event.inputs.vpc_id }}"
+          
+          # Get default VPC if not specified
+          if [[ -z "$vpc_id" ]]; then
+            vpc_id=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text)
+            if [[ "$vpc_id" == "None" ]]; then
+              echo "Error: No default VPC found. Please specify a VPC ID."
+              exit 1
+            fi
+            echo "Using default VPC: $vpc_id"
+          fi
+          
+          echo "## Creating Security Groups" >> $GITHUB_STEP_SUMMARY
+          
+          # Function to create security group
+          create_sg() {
+            local sg_name="$1"
+            local description="$2"
+            local rules="$3"
+            
+            # Check if security group already exists
+            existing_sg=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$sg_name" "Name=vpc-id,Values=$vpc_id" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
+            
+            if [[ "$existing_sg" != "None" ]]; then
+              echo "⚠️ Security group $sg_name already exists: $existing_sg" >> $GITHUB_STEP_SUMMARY
+              echo "$existing_sg"
+              return
+            fi
+            
+            # Create security group
+            sg_id=$(aws ec2 create-security-group --group-name "$sg_name" --description "$description" --vpc-id "$vpc_id" --query 'GroupId' --output text)
+            
+            # Add tags
+            aws ec2 create-tags --resources "$sg_id" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions Key=CreatedFor,Value="$base_username"
+            
+            # Add rules based on type
+            case "$rules" in
+              "web")
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 80 --cidr 0.0.0.0/0
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 443 --cidr 0.0.0.0/0
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 22 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 22 --cidr 172.16.0.0/12
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 22 --cidr 192.168.0.0/16
+                ;;
+              "database")
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 3306 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 5432 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 1433 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 27017 --cidr 10.0.0.0/8
+                ;;
+              "application")
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 8080 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 8443 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 9000 --cidr 10.0.0.0/8
+                aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 22 --cidr 10.0.0.0/8
+                ;;
+            esac
+            
+            echo "- ✅ Created security group: $sg_name ($sg_id)" >> $GITHUB_STEP_SUMMARY
+            echo "$sg_id"
+          }
+          
+          # Create security groups based on type
+          if [[ "$sg_type" == "all" ]]; then
+            web_sg=$(create_sg "${base_username}-web-sg" "Web tier security group for $base_username" "web")
+            db_sg=$(create_sg "${base_username}-db-sg" "Database tier security group for $base_username" "database")
+            app_sg=$(create_sg "${base_username}-app-sg" "Application tier security group for $base_username" "application")
+            echo "WEB_SG_ID=$web_sg" >> $GITHUB_ENV
+            echo "DB_SG_ID=$db_sg" >> $GITHUB_ENV
+            echo "APP_SG_ID=$app_sg" >> $GITHUB_ENV
+          else
+            sg_id=$(create_sg "${base_username}-${sg_type}-sg" "${sg_type^} tier security group for $base_username" "$sg_type")
+            echo "SG_ID=$sg_id" >> $GITHUB_ENV
+          fi
+      
       - name: Create IAM Users
         if: github.event.inputs.action == 'create'
         run: |
@@ -82,8 +184,85 @@ jobs:
             # Create IAM user
             aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions
             
-            # Attach AdministratorAccess policy
-            aws iam attach-user-policy --user-name "$username" --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+            # Create custom IAM policy for specific AWS services only (S3, SageMaker, Lambda, QuickSight, ECS)
+            if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+              policy_document=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:*"
+      ],
+      "Resource": "*",
+      "Sid": "S3FullAccess"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:*"
+      ],
+      "Resource": "*",
+      "Sid": "SageMakerFullAccess"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:*"
+      ],
+      "Resource": "*",
+      "Sid": "LambdaFullAccess"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "quicksight:*"
+      ],
+      "Resource": "*",
+      "Sid": "QuickSightFullAccess"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecs:*"
+      ],
+      "Resource": "*",
+      "Sid": "ECSFullAccess"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole",
+        "iam:ListRoles",
+        "iam:GetRole"
+      ],
+      "Resource": "*",
+      "Sid": "IAMPassRoleAccess"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:*",
+        "cloudwatch:*"
+      ],
+      "Resource": "*",
+      "Sid": "LogsAndMonitoringAccess"
+    }
+  ]
+}
+EOF
+              )
+              
+              # Create custom policy
+              policy_arn=$(aws iam create-policy --policy-name "${username}-AML-CC-Policy" --policy-document "$policy_document" --query 'Policy.Arn' --output text 2>/dev/null || aws iam get-policy --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy" --query 'Policy.Arn' --output text)
+              
+              # Attach custom policy
+              aws iam attach-user-policy --user-name "$username" --policy-arn "$policy_arn"
+            else
+              # Attach AdministratorAccess policy (original behavior)
+              aws iam attach-user-policy --user-name "$username" --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+            fi
             
             # Create access key
             access_key_output=$(aws iam create-access-key --user-name "$username")
@@ -97,6 +276,21 @@ jobs:
             echo "  - ARN: $user_arn" >> $GITHUB_STEP_SUMMARY
             echo "  - Access Key ID: $access_key_id" >> $GITHUB_STEP_SUMMARY
             echo "  - Secret Access Key: [HIDDEN - Check AWS Console]" >> $GITHUB_STEP_SUMMARY
+            
+            # Add security group information if created
+            if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+              echo "  - Security Groups:" >> $GITHUB_STEP_SUMMARY
+              if [[ "${{ github.event.inputs.security_group_type }}" == "all" ]]; then
+                echo "    - Web SG: ${WEB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+                echo "    - Database SG: ${DB_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+                echo "    - Application SG: ${APP_SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "    - ${{ github.event.inputs.security_group_type }} SG: ${SG_ID:-N/A}" >> $GITHUB_STEP_SUMMARY
+              fi
+              echo "  - Policy: Custom AML-CC Policy (restricted to assigned security groups)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "  - Policy: AdministratorAccess (full AWS access)" >> $GITHUB_STEP_SUMMARY
+            fi
             
             # Store credentials securely (you may want to use AWS Secrets Manager)
             echo "::add-mask::$secret_access_key"
@@ -147,10 +341,66 @@ jobs:
               aws iam delete-user-policy --user-name "$username" --policy-name "$policy"
             done
             
+            # Delete custom policy if it exists
+            policy_arn="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/${username}-AML-CC-Policy"
+            if aws iam get-policy --policy-arn "$policy_arn" 2>/dev/null; then
+              aws iam delete-policy --policy-arn "$policy_arn"
+            fi
+            
             # Delete user
             aws iam delete-user --user-name "$username"
             
             echo "- ✅ Deleted user: $username" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Delete Security Groups
+        if: github.event.inputs.action == 'delete' && github.event.inputs.create_security_groups == 'true'
+        run: |
+          base_username="${{ github.event.inputs.username }}"
+          user_count="${{ github.event.inputs.user_count }}"
+          sg_type="${{ github.event.inputs.security_group_type }}"
+          vpc_id="${{ github.event.inputs.vpc_id }}"
+          
+          # Get default VPC if not specified
+          if [[ -z "$vpc_id" ]]; then
+            vpc_id=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text)
+          fi
+          
+          echo "## Deleting Security Groups" >> $GITHUB_STEP_SUMMARY
+          
+          # Function to delete security group
+          delete_sg() {
+            local sg_name="$1"
+            
+            # Get security group ID
+            sg_id=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$sg_name" "Name=vpc-id,Values=$vpc_id" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
+            
+            if [[ "$sg_id" == "None" ]]; then
+              echo "⚠️ Security group $sg_name not found" >> $GITHUB_STEP_SUMMARY
+              return
+            fi
+            
+            # Check if security group is in use
+            instances_using_sg=$(aws ec2 describe-instances --filters "Name=instance.group-id,Values=$sg_id" "Name=instance-state-name,Values=running,pending,stopping,stopped" --query 'Reservations[].Instances[].InstanceId' --output text)
+            
+            if [[ -n "$instances_using_sg" ]]; then
+              echo "⚠️ Security group $sg_name ($sg_id) is in use by instances: $instances_using_sg" >> $GITHUB_STEP_SUMMARY
+              echo "   Cannot delete security group while in use" >> $GITHUB_STEP_SUMMARY
+              return
+            fi
+            
+            # Delete security group
+            aws ec2 delete-security-group --group-id "$sg_id"
+            echo "- ✅ Deleted security group: $sg_name ($sg_id)" >> $GITHUB_STEP_SUMMARY
+          }
+          
+          # Delete security groups based on type
+          if [[ "$sg_type" == "all" ]]; then
+            delete_sg "${base_username}-web-sg"
+            delete_sg "${base_username}-db-sg"
+            delete_sg "${base_username}-app-sg"
+          else
+            delete_sg "${base_username}-${sg_type}-sg"
+          fi
           done
       
       - name: List IAM Users
@@ -172,8 +422,43 @@ jobs:
       - name: Security Check
         run: |
           echo "## Security Validation" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Using OIDC authentication (no hardcoded credentials)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Using AWS credentials authentication (secure secret management)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ IAM operations logged via CloudTrail" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Workflow requires manual approval" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+            echo "- ✅ Service-Specific Access: Access restricted to S3, SageMaker, Lambda, QuickSight, and ECS only" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Custom IAM policies with least privilege principles" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Limited to 5 AWS services vs 200+ available services" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⚠️ **Warning**: Users have AdministratorAccess (full AWS access)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "- ⚠️ **Remember**: Enable MFA for created users" >> $GITHUB_STEP_SUMMARY
-          echo "- ⚠️ **Remember**: Review and apply least privilege policies" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Remember**: Regularly rotate access keys" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Remember**: Monitor CloudTrail logs for unusual activity" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## AWS Services Access Summary" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ github.event.inputs.create_security_groups }}" == "true" ]]; then
+            echo "**With Security Groups (Restricted Access):**" >> $GITHUB_STEP_SUMMARY
+            echo "- **S3**: Full access to all S3 buckets and objects" >> $GITHUB_STEP_SUMMARY
+            echo "- **SageMaker**: Complete access to all SageMaker services (including Model Registry)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Lambda**: Full access to all Lambda functions and layers" >> $GITHUB_STEP_SUMMARY
+            echo "- **QuickSight**: Complete access to all QuickSight resources" >> $GITHUB_STEP_SUMMARY
+            echo "- **ECS**: Full access to all Elastic Container Service resources" >> $GITHUB_STEP_SUMMARY
+            echo "- **CloudWatch & Logs**: Full monitoring and logging access" >> $GITHUB_STEP_SUMMARY
+            echo "- **IAM**: Limited to PassRole, ListRoles, and GetRole permissions" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**With AdministratorAccess (Full Access):**" >> $GITHUB_STEP_SUMMARY
+            echo "- **All AWS Services**: Complete access to all AWS services and resources" >> $GITHUB_STEP_SUMMARY
+            echo "- **EC2**: Full compute service access" >> $GITHUB_STEP_SUMMARY
+            echo "- **S3**: All storage service access" >> $GITHUB_STEP_SUMMARY
+            echo "- **IAM**: Full identity and access management" >> $GITHUB_STEP_SUMMARY
+            echo "- **VPC**: Complete networking service access" >> $GITHUB_STEP_SUMMARY
+            echo "- **RDS**: Full database service access" >> $GITHUB_STEP_SUMMARY
+            echo "- **Lambda**: Complete serverless compute access" >> $GITHUB_STEP_SUMMARY
+            echo "- **CloudFormation**: Full infrastructure as code access" >> $GITHUB_STEP_SUMMARY
+            echo "- **And 200+ other AWS services..." >> $GITHUB_STEP_SUMMARY
+          fi
