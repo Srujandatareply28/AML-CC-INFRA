@@ -1,15 +1,14 @@
-# AML-CC-INFRA - AWS Infrastructure Management
+# AML-CC-INFRA - AWS IAM User Management
 
-This repository contains GitHub Actions workflows and Terraform configurations for managing AWS IAM users, roles, and infrastructure for the AML-CC (Anti-Money Laundering - Customer Compliance) project.
+A streamlined GitHub Actions workflow for managing AWS IAM users for Anti-Money Laundering Compliance and Control (AML-CC) projects. This solution uses direct AWS CLI commands for simple and efficient IAM user management, while infrastructure is managed separately using AWS CDK.
 
-## 🚀 Features
+## Features
 
-- **Dynamic IAM User Management**: Create, delete, and list IAM users with full AWS admin access
-- **Security Groups**: Pre-configured security groups with appropriate access rules
-- **IAM Roles**: EC2 and Lambda roles with custom policies for AML-CC operations
-- **MFA Enforcement**: Mandatory multi-factor authentication for all IAM users
-- **Automated Workflows**: GitHub Actions for infrastructure management
-- **Security Best Practices**: Built-in security validations and recommendations
+- **Simple IAM User Management**: Create, delete, and list IAM users using AWS CLI
+- **GitHub Actions Integration**: Secure OIDC-based authentication with AWS
+- **Bulk Operations**: Create multiple users with consistent configuration
+- **Security Best Practices**: Secure credential handling and audit logging
+- **CDK Compatible**: Designed to work alongside CDK-managed infrastructure
 
 ## 📋 Prerequisites
 

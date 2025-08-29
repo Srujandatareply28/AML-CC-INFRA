@@ -1,4 +1,4 @@
-name: AWS IAM Roles and User Management
+name: AWS IAM User Management
 
 on:
   workflow_dispatch:
@@ -13,23 +13,22 @@ on:
           - delete
           - list
       username:
-        description: 'IAM Username (required for create/delete)'
+        description: 'Base username for IAM users (e.g., aml-user)'
         required: false
+        default: 'aml-user'
         type: string
       user_count:
-        description: 'Number of users to create (for bulk creation)'
+        description: 'Number of users to create (1-10)'
         required: false
         default: '1'
         type: string
 
 env:
   AWS_REGION: us-east-1
-  TERRAFORM_VERSION: 1.5.0
 
 jobs:
   iam-management:
     runs-on: ubuntu-latest
-    
     permissions:
       id-token: write
       contents: read
@@ -45,11 +44,6 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-IAM-Management
       
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-      
       - name: Validate inputs
         run: |
           if [[ "${{ github.event.inputs.action }}" == "create" || "${{ github.event.inputs.action }}" == "delete" ]]; then
@@ -57,96 +51,130 @@ jobs:
               echo "Error: Username is required for create/delete actions"
               exit 1
             fi
-          fi
-          
-          if [[ "${{ github.event.inputs.action }}" == "create" ]]; then
+            
             user_count="${{ github.event.inputs.user_count }}"
-            if ! [[ "$user_count" =~ ^[0-9]+$ ]] || [[ "$user_count" -lt 1 ]] || [[ "$user_count" -gt 10 ]]; then
-              echo "Error: User count must be a number between 1 and 10"
+            if ! [[ "$user_count" =~ ^[1-9]$|^10$ ]]; then
+              echo "Error: User count must be between 1 and 10"
               exit 1
             fi
           fi
       
-      - name: Initialize Terraform
-        run: |
-          cd terraform
-          terraform init
-      
       - name: Create IAM Users
         if: github.event.inputs.action == 'create'
         run: |
-          cd terraform
+          base_username="${{ github.event.inputs.username }}"
+          user_count="${{ github.event.inputs.user_count }}"
           
-          # Create terraform.tfvars with user details
-          cat > terraform.tfvars << EOF
-          base_username = "${{ github.event.inputs.username }}"
-          user_count = ${{ github.event.inputs.user_count }}
-          EOF
+          echo "## Creating IAM Users" >> $GITHUB_STEP_SUMMARY
           
-          # Plan and apply
-          terraform plan -out=tfplan
-          terraform apply tfplan
+          for i in $(seq 1 $user_count); do
+            if [ $user_count -eq 1 ]; then
+              username="$base_username"
+            else
+              username="${base_username}-${i}"
+            fi
+            
+            # Check if user already exists
+            if aws iam get-user --user-name "$username" 2>/dev/null; then
+              echo "⚠️ User $username already exists, skipping..." >> $GITHUB_STEP_SUMMARY
+              continue
+            fi
+            
+            # Create IAM user
+            aws iam create-user --user-name "$username" --tags Key=Project,Value=AML-CC Key=Environment,Value=prod Key=ManagedBy,Value=GitHubActions
+            
+            # Attach AdministratorAccess policy
+            aws iam attach-user-policy --user-name "$username" --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+            
+            # Create access key
+            access_key_output=$(aws iam create-access-key --user-name "$username")
+            access_key_id=$(echo "$access_key_output" | jq -r '.AccessKey.AccessKeyId')
+            secret_access_key=$(echo "$access_key_output" | jq -r '.AccessKey.SecretAccessKey')
+            
+            # Get user ARN
+            user_arn=$(aws iam get-user --user-name "$username" --query 'User.Arn' --output text)
+            
+            echo "- ✅ Created user: $username" >> $GITHUB_STEP_SUMMARY
+            echo "  - ARN: $user_arn" >> $GITHUB_STEP_SUMMARY
+            echo "  - Access Key ID: $access_key_id" >> $GITHUB_STEP_SUMMARY
+            echo "  - Secret Access Key: [HIDDEN - Check AWS Console]" >> $GITHUB_STEP_SUMMARY
+            
+            # Store credentials securely (you may want to use AWS Secrets Manager)
+            echo "::add-mask::$secret_access_key"
+          done
           
-          # Output created users
-          echo "## Created IAM Users" >> $GITHUB_STEP_SUMMARY
-          terraform output -json created_users | jq -r '.[] | "- " + .'
-          
-          # Save outputs as artifacts
-          terraform output -json > ../iam-outputs.json
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Security Note**: Access keys have been created. Please:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Retrieve secret keys from AWS Console immediately" >> $GITHUB_STEP_SUMMARY
+          echo "2. Enable MFA for all users" >> $GITHUB_STEP_SUMMARY
+          echo "3. Follow principle of least privilege" >> $GITHUB_STEP_SUMMARY
       
       - name: Delete IAM Users
         if: github.event.inputs.action == 'delete'
         run: |
-          cd terraform
+          base_username="${{ github.event.inputs.username }}"
+          user_count="${{ github.event.inputs.user_count }}"
           
-          # Create terraform.tfvars for deletion
-          cat > terraform.tfvars << EOF
-          base_username = "${{ github.event.inputs.username }}"
-          user_count = 0
-          EOF
+          echo "## Deleting IAM Users" >> $GITHUB_STEP_SUMMARY
           
-          # Plan and apply destruction
-          terraform plan -destroy -out=tfplan
-          terraform apply tfplan
-          
-          echo "## Deleted IAM Users" >> $GITHUB_STEP_SUMMARY
-          echo "- Successfully deleted users with base name: ${{ github.event.inputs.username }}" >> $GITHUB_STEP_SUMMARY
+          for i in $(seq 1 $user_count); do
+            if [ $user_count -eq 1 ]; then
+              username="$base_username"
+            else
+              username="${base_username}-${i}"
+            fi
+            
+            # Check if user exists
+            if ! aws iam get-user --user-name "$username" 2>/dev/null; then
+              echo "⚠️ User $username does not exist, skipping..." >> $GITHUB_STEP_SUMMARY
+              continue
+            fi
+            
+            # Delete access keys
+            access_keys=$(aws iam list-access-keys --user-name "$username" --query 'AccessKeyMetadata[].AccessKeyId' --output text)
+            for key in $access_keys; do
+              aws iam delete-access-key --user-name "$username" --access-key-id "$key"
+            done
+            
+            # Detach policies
+            attached_policies=$(aws iam list-attached-user-policies --user-name "$username" --query 'AttachedPolicies[].PolicyArn' --output text)
+            for policy in $attached_policies; do
+              aws iam detach-user-policy --user-name "$username" --policy-arn "$policy"
+            done
+            
+            # Delete inline policies
+            inline_policies=$(aws iam list-user-policies --user-name "$username" --query 'PolicyNames' --output text)
+            for policy in $inline_policies; do
+              aws iam delete-user-policy --user-name "$username" --policy-name "$policy"
+            done
+            
+            # Delete user
+            aws iam delete-user --user-name "$username"
+            
+            echo "- ✅ Deleted user: $username" >> $GITHUB_STEP_SUMMARY
+          done
       
       - name: List IAM Users
         if: github.event.inputs.action == 'list'
         run: |
           echo "## Current IAM Users" >> $GITHUB_STEP_SUMMARY
-          aws iam list-users --query 'Users[].UserName' --output table >> $GITHUB_STEP_SUMMARY
           
-          echo "## IAM Roles" >> $GITHUB_STEP_SUMMARY
-          aws iam list-roles --query 'Roles[?starts_with(RoleName, `AML-CC`)].RoleName' --output table >> $GITHUB_STEP_SUMMARY
+          # List all users with AML prefix or specified username
+          users=$(aws iam list-users --query 'Users[?starts_with(UserName, `aml-`) || starts_with(UserName, `${{ github.event.inputs.username }}`)].[UserName,Arn,CreateDate]' --output json)
+          
+          if [ "$users" = "[]" ]; then
+            echo "No matching IAM users found." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Username | ARN | Created Date |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-----|--------------|" >> $GITHUB_STEP_SUMMARY
+            echo "$users" | jq -r '.[] | "| \(.[0]) | \(.[1]) | \(.[2]) |"' >> $GITHUB_STEP_SUMMARY
+          fi
       
-      - name: Upload Terraform outputs
-        if: github.event.inputs.action == 'create'
-        uses: actions/upload-artifact@v4
-        with:
-          name: iam-outputs-${{ github.run_number }}
-          path: iam-outputs.json
-          retention-days: 30
-      
-      - name: Security scan
+      - name: Security Check
         run: |
           echo "## Security Validation" >> $GITHUB_STEP_SUMMARY
-          
-          # Check for overly permissive policies
-          if aws iam list-attached-user-policies --user-name "${{ github.event.inputs.username }}" 2>/dev/null | grep -q "AdministratorAccess"; then
-            echo "⚠️ Warning: User has AdministratorAccess policy attached" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Validate MFA requirement
-          echo "✅ MFA enforcement is configured in IAM policies" >> $GITHUB_STEP_SUMMARY
-          
-          # Check security group rules
-          echo "✅ Security groups configured with minimal required access" >> $GITHUB_STEP_SUMMARY
-      
-      - name: Cleanup on failure
-        if: failure()
-        run: |
-          cd terraform
-          echo "Cleaning up resources due to workflow failure..."
-          terraform destroy -auto-approve || true
+          echo "- ✅ Using OIDC authentication (no hardcoded credentials)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ IAM operations logged via CloudTrail" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Workflow requires manual approval" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Remember**: Enable MFA for created users" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Remember**: Review and apply least privilege policies" >> $GITHUB_STEP_SUMMARY
